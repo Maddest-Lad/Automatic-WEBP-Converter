@@ -7,35 +7,40 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
-	"github.com/radovskyb/watcher"
+	"github.com/fsnotify/fsnotify"
 	"golang.org/x/image/webp"
 )
 
 func main() {
-	// Create Watcher and Filter to File Creation Events
-	w := watcher.New()
-	w.FilterOps(watcher.Create)
+	// Create new watcher.
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer watcher.Close()
 
-	// Filter to WebP Files
-	w.AddFilterHook(IncludeExtensionsFilter([]string{"webp"}))
-
+	// Listen For Events.
 	go func() {
 		for {
 			select {
-			case event := <-w.Event:
-				if err := convertToPNG(event.Path); err != nil {
-					log.Println("Conversion error:", err)
-				} else {
-					log.Printf("Successfully converted %s to a PNG\n", event.Path)
+			case event, ok := <-watcher.Events:
+				if !ok {
+					return
 				}
-
-			case err := <-w.Error:
-				log.Println("Watcher error:", err)
-
-			case <-w.Closed:
-				return
+				if event.Has(fsnotify.Create) && pathIsWebP(event.Name) {
+					log.Printf("Converting %s to a PNG", event.Name)
+					if err := convertToPNG(event.Name); err != nil {
+						log.Printf("Conversion error: %s", err)
+					} else {
+						log.Printf("Successfully converted %s to a PNG\n", event.Name)
+					}
+				}
+			case err, ok := <-watcher.Errors:
+				if !ok {
+					return
+				}
+				log.Print("error:", err)
 			}
 		}
 	}()
@@ -46,41 +51,38 @@ func main() {
 		log.Fatalln("Unable to find home directory:", err)
 	}
 
-	w.Add(filepath.Join(homeDirectory, "Downloads"))
-	w.Add(filepath.Join(homeDirectory, "Pictures"))
+	// Todo replace with Custom Config File and/or UI
+	downloads := filepath.Join(homeDirectory, "Downloads")
+	pictures := filepath.Join(homeDirectory, "Pictures")
 
-	fmt.Println()
-
-	// Start the watching process, check for changes every second.
-	if err := w.Start(time.Second); err != nil {
-		log.Fatalln(err)
+	err = watcher.Add(downloads)
+	if err != nil {
+		log.Printf("failed to watch %s %s", downloads, err)
 	}
+
+	err = watcher.Add(pictures)
+	if err != nil {
+		log.Printf("failed to watch %s %s", pictures, err)
+	}
+
+	// Block main goroutine forever.
+	<-make(chan struct{})
 }
 
-// Accepts or Rejects a File Based on it's Extension
-func IncludeExtensionsFilter(extensions []string) watcher.FilterFileHookFunc {
-	return func(info os.FileInfo, fullPath string) error {
-		ext := filepath.Ext(info.Name())
-		ext = strings.TrimPrefix(ext, ".")
-
-		// Check if the file's extension is in the list of allowed extensions
-		for _, allowedExt := range extensions {
-			if ext == allowedExt {
-				return nil
-			}
-		}
-		// No matching extension.
-		return watcher.ErrSkip
-	}
+func pathIsWebP(path string) bool {
+	ext := filepath.Ext(path)
+	ext = strings.TrimPrefix(ext, ".")
+	fmt.Println(path, ext)
+	return ext == "webp"
 }
 
-func convertToPNG(fullpath string) error {
-	directory := strings.TrimSuffix(fullpath, filepath.Base(fullpath))
-	filename := strings.TrimSuffix(filepath.Base(fullpath), filepath.Ext(fullpath))
+func convertToPNG(path string) error {
+	directory := strings.TrimSuffix(path, filepath.Base(path))
+	filename := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
 	outputPath := filepath.Join(directory, filename+".png")
 
 	// Load Image to Convert
-	f, err := os.Open(fullpath)
+	f, err := os.Open(path)
 	if err != nil {
 		return fmt.Errorf("failed to Open the File: %v", err)
 	}
